@@ -1,0 +1,99 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Simon Gurcke"
+date: "21 Mar 2015"
+output: html_document
+---
+
+## Synopsis
+
+The goal of this project is to predict the manner in which a number of subjects performed certain exercises. The data stems from:
+
+*Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.*
+
+Read more here: http://groupware.les.inf.puc-rio.br/har
+
+There are 5 classes (A, B, C, D and E) of how an exercise was performed. Class A represents a good performance, while all the other classes represent different ways of doing the exercise wrong. The prediction of the class is to be based on the data gathered from a number of sensors on the participants body and training devices.
+
+## Required packages
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+library(parallel, quietly = TRUE)
+library(doParallel, quietly = TRUE)
+library(randomForest, quietly = TRUE)
+library(caret, quietly = TRUE)
+```
+
+## Load and prepare the data
+
+The first step is to load the data, create subsets of it for training and validation and clean it. The original training set contains 19622 observations. Such a large number is not required for building a good model, so we reduce it to about 10 percent for performance reasons. A validation set is created by taking about 1 percent of the remaining observations. Of 160 variables in the original data set we only keep those that represent raw sensor data, which reduces the number of predictors to 53.
+
+```{r, echo=TRUE, cache=TRUE}
+testing <- read.csv('pml-testing.csv')
+training <- read.csv('pml-training.csv')
+
+# Create a smaller subset of the training data
+partition1 <- createDataPartition(training$classe, p = .1, list = FALSE)
+trainingSubset <- training[partition1,]
+
+# From the rest create a validation subset
+validationSubset <- training[-partition1,]
+partition2 <- createDataPartition(validationSubset$classe, p = .01, list = FALSE)
+validationSubset <- validationSubset[partition2,]
+
+# Leave only the raw data columns in training subset
+cols <- colnames(training)
+colsRaw <- cols[!grepl("^(max|min|skewness|kurtosis|amplitude|stddev|var|avg)_", cols)]
+colsRaw <- colsRaw[!(colsRaw %in% c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window"))]
+trainingSubset <- trainingSubset[,colsRaw]
+```
+
+## Near zero variance analysis
+
+In an attempt to further reduce the number of predictors we perform a near zero variance analysis.
+
+```{r, echo=TRUE}
+nearZeroVar(trainingSubset, saveMetrics = TRUE)
+```
+
+The result shows that none of the predictors have near zero variance. So we keep the 53 predictors.
+
+## Build the model
+
+For classification we use random forests with cross-validation, because we expect the best results from this algorithm. To enhance the performance of the training process we use parallelization.
+
+```{r, echo=TRUE, cache=TRUE}
+# Start parallelization on 3 cores
+registerDoParallel(prl <- makeForkCluster(3))
+
+# Train a model with 4-fold cross-validation and 10 repeats
+ctrl <- trainControl(method = "repeatedcv", number = 4, repeats = 10)
+fit <- train(classe ~ ., data = trainingSubset, method = "rf",
+             trControl = ctrl, ntree = 80)
+
+# Stop parallelization
+stopCluster(prl)
+
+fit
+```
+
+We can see the importance of each predictor in the final model in the following plot.
+
+```{r, echo=TRUE, fig.height = 8, fig.width = 6}
+plot(varImp(fit))
+````
+
+## Error rate
+
+After fitting the model we estimate the out of sample error rate based on the validation set.
+
+```{r, echo=TRUE}
+# Predict on validation subset
+pred <- predict(fit, validationSubset)
+
+# Calculate accuracy and error rate
+accuracy <- sum(pred == validationSubset$classe) / length(pred)
+error <- 1 - accuracy
+```
+
+So the estimated out of sample error rate is `r round(error, 2)`.
